@@ -9,6 +9,7 @@ app = Dash(__name__, external_stylesheets=dmc.styles.ALL)
 def carica_dati():
     df = pd.read_sql_query("SELECT * FROM bollettini", sqlite3.connect(DB_PATH))
     df['cvss'] = df['cvss'].fillna(0.0)
+    df['data_pubblicazione'] = pd.to_datetime(df['data_pubblicazione'], errors='coerce')
     df['cve_correlate'] = df['cve_correlate'].apply(
         lambda s: ", ".join(json.loads(s)) if s else ""
     )
@@ -29,7 +30,6 @@ def kpi_card(label, value, color, icon):
         style={"flex": 1, "background": "#1a1b2e", "borderColor": "#2d2e4a"},
     )
 
-# In DMC 2.x: navbar/header sono dict di config, i componenti vanno in children
 app.layout = dmc.MantineProvider(
     forceColorScheme="dark",
     children=dmc.AppShell(
@@ -91,7 +91,7 @@ app.layout = dmc.MantineProvider(
     Input("solo-poc",       "checked"),
 )
 def aggiorna(cerca, cvss, tech, exp, poc):
-    d = df[df['cvss'] >= (cvss or 0)]
+    d = df[df['cvss'] >= (cvss or 0)].copy()
     if cerca: d = d[d['cve_correlate'].str.contains(cerca, case=False, na=False)]
     if tech:  d = d[d['tecnologia'].isin(tech)]
     if exp:   d = d[d['is_exploited'] == 1]
@@ -100,9 +100,9 @@ def aggiorna(cerca, cvss, tech, exp, poc):
     media = round(d.cvss.mean(), 1) if len(d) else 0.0
 
     kpis = [
-        kpi_card("Bollettini", len(d),                     "blue",   "📋"),
-        kpi_card("Critici",    len(d[d.cvss >= 9]),         "red",    "🚨"),
-        kpi_card("Exploited",  int(d.is_exploited.sum()),   "orange", "🔥"),
+        kpi_card("Bollettini", len(d), "blue", "📋"),
+        kpi_card("Critici", len(d[d.cvss >= 9]), "red", "🚨"),
+        kpi_card("Exploited", int(d.is_exploited.sum()), "orange", "🔥"),
         kpi_card("Media CVSS", media,
                  "red" if media >= 9 else "orange" if media >= 7 else "blue", "📊"),
     ]
@@ -115,32 +115,20 @@ def aggiorna(cerca, cvss, tech, exp, poc):
                      values='count', names='tipologia_attacco',
                      hole=0.4, title="Tipologia Attacco", template="plotly_dark")
     fig_bar.update_layout(**_dark)
-    fig_pie.update_layout(**_dark, uniformtext_minsize=10, uniformtext_mode="hide",
-                          margin={"t": 40, "b": 40, "l": 40, "r": 40})
-    fig_pie.update_traces(textposition="inside", textinfo="percent",
-                          insidetextorientation="radial")
+    fig_pie.update_layout(**_dark, margin={"t": 40, "b": 40, "l": 40, "r": 40})
 
-    d_show = (d[['data_pubblicazione','titolo','cvss','cve_correlate',
-                 'tecnologia','tipologia_attacco','is_exploited','has_poc','url']]
-              .sort_values("data_pubblicazione", ascending=False))
+    d_show = d.sort_values("data_pubblicazione", ascending=False, na_position='last')
 
     rows = [
         dmc.TableTr([
-            dmc.TableTd(str(r.data_pubblicazione)[:10],
+            dmc.TableTd(r.data_pubblicazione.strftime('%d/%m/%Y') if pd.notnull(r.data_pubblicazione) else "N/D",
                         style={"color": "#868e96", "fontSize": 12}),
             dmc.TableTd(r.titolo,
-                        style={"maxWidth": 300, "overflow": "hidden",
-                               "textOverflow": "ellipsis", "whiteSpace": "nowrap"}),
-            dmc.TableTd(dmc.Badge(
-                f"{r.cvss:.1f}",
-                color="red" if r.cvss >= 9 else "orange" if r.cvss >= 7 else "blue",
-                variant="light",
-            )),
+                        style={"maxWidth": 300, "overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap"}),
+            dmc.TableTd(dmc.Badge(f"{r.cvss:.1f}", color="red" if r.cvss >= 9 else "orange" if r.cvss >= 7 else "blue", variant="light")),
             dmc.TableTd(r.cve_correlate,
-                        style={"maxWidth": 280, "overflow": "hidden",
-                               "textOverflow": "ellipsis", "whiteSpace": "nowrap",
-                               "fontSize": 12}),
-            dmc.TableTd(r.tecnologia,        style={"fontSize": 12}),
+                        style={"maxWidth": 280, "overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap", "fontSize": 12}),
+            dmc.TableTd(r.tecnologia, style={"fontSize": 12}),
             dmc.TableTd(r.tipologia_attacco, style={"fontSize": 12}),
             dmc.TableTd(dmc.Badge("✓", color="orange", variant="dot") if r.is_exploited else ""),
             dmc.TableTd(dmc.Badge("✓", color="grape",  variant="dot") if r.has_poc else ""),
@@ -153,24 +141,18 @@ def aggiorna(cerca, cvss, tech, exp, poc):
         dmc.Table(
             [
                 dmc.TableThead(dmc.TableTr([
-                    dmc.TableTh(c) for c in
-                    ["Data", "Titolo", "CVSS", "CVE", "Tecnologia", "Tipologia", "Expl.", "PoC", "Link"]
+                    dmc.TableTh(c) for c in ["Data", "Titolo", "CVSS", "CVE", "Tecnologia", "Tipologia", "Expl.", "PoC", "Link"]
                 ])),
                 dmc.TableTbody(rows),
             ],
             striped=True, highlightOnHover=True,
             style={"fontSize": 13, "width": "100%", "tableLayout": "fixed"},
         ),
-        h=500,
-        style={"width": "100%"},
+        h=500, style={"width": "100%"},
     )
 
     graph_config = {"displayModeBar": False}
-    return kpis, [
-        dcc.Graph(figure=fig_bar, config=graph_config),
-        dcc.Graph(figure=fig_pie, config=graph_config),
-    ], tabella
-
+    return kpis, [dcc.Graph(figure=fig_bar, config=graph_config), dcc.Graph(figure=fig_pie, config=graph_config)], tabella
 
 if __name__ == "__main__":
     app.run(debug=False)
